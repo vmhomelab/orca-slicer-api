@@ -14,6 +14,107 @@ import { generateMetaDataHeaders } from "./helpers";
 
 const router = Router();
 
+type SliceProgressStatus = "working" | "succeeded" | "failed";
+
+interface SliceProgressRecord {
+  requestId: string;
+  status: SliceProgressStatus;
+  expiresAt: number;
+}
+
+const DEFAULT_PROGRESS_TTL_MS = 15 * 60 * 1000;
+const DEFAULT_PROGRESS_MAX_RECORDS = 100;
+const progressTtlMs = boundedNumber(
+  process.env.SLICE_PROGRESS_TTL_MS,
+  DEFAULT_PROGRESS_TTL_MS,
+  1000,
+  24 * 60 * 60 * 1000,
+);
+const progressMaxRecords = boundedNumber(
+  process.env.SLICE_PROGRESS_MAX_RECORDS,
+  DEFAULT_PROGRESS_MAX_RECORDS,
+  1,
+  1000,
+);
+const progressRecords = new Map<string, SliceProgressRecord>();
+
+function boundedNumber(
+  value: string | undefined,
+  defaultValue: number,
+  minimum: number,
+  maximum: number,
+): number {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) return defaultValue;
+  return Math.min(maximum, Math.max(minimum, Math.floor(parsed)));
+}
+
+function isUuid(value: unknown): value is string {
+  return (
+    typeof value === "string" &&
+    /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
+      value,
+    )
+  );
+}
+
+function removeExpiredProgressRecords() {
+  const now = Date.now();
+  for (const [requestId, record] of progressRecords) {
+    if (record.expiresAt <= now) progressRecords.delete(requestId);
+  }
+}
+
+function createProgressRecord(requestId: string): void {
+  removeExpiredProgressRecords();
+  if (progressRecords.has(requestId)) {
+    throw new AppError(409, "A slice request with this requestId is already active");
+  }
+
+  while (progressRecords.size >= progressMaxRecords) {
+    const terminal = [...progressRecords.values()].find(
+      (record) => record.status !== "working",
+    );
+    if (!terminal) {
+      throw new AppError(503, "Slice progress tracking is at capacity");
+    }
+    progressRecords.delete(terminal.requestId);
+  }
+
+  progressRecords.set(requestId, {
+    requestId,
+    status: "working",
+    expiresAt: Date.now() + progressTtlMs,
+  });
+}
+
+function markProgressTerminal(requestId: string, status: "succeeded" | "failed") {
+  const record = progressRecords.get(requestId);
+  if (record) record.status = status;
+}
+
+/**
+ * Returns a deliberately small, safe snapshot for synchronous /slice requests.
+ * Progress percentages are omitted because Orca's CLI does not provide a reliable
+ * machine-readable percentage for this synchronous invocation.
+ */
+router.get("/progress/:requestId", (req, res) => {
+  if (!isUuid(req.params.requestId)) {
+    throw new AppError(404, "Slice request not found");
+  }
+
+  removeExpiredProgressRecords();
+  const record = progressRecords.get(req.params.requestId);
+  if (!record) {
+    throw new AppError(404, "Slice request not found");
+  }
+
+  res.status(200).json({
+    requestId: record.requestId,
+    status: record.status,
+  });
+});
+
 router.post(
   "/",
   uploadFullPrint.fields([
@@ -36,65 +137,80 @@ router.post(
       throw new AppError(400, "Model file is required for slicing");
     }
 
-    const modelFile = files["file"][0];
+    const requestId = req.body.requestId;
+    if (requestId !== undefined && !isUuid(requestId)) {
+      throw new AppError(400, "requestId must be a UUID");
+    }
 
-    const { gcodes, workdir } = await sliceModel(
-      modelFile.buffer,
-      modelFile.originalname,
-      req.body as SlicingSettings,
-      {
-        printer: files["printerProfile"]?.[0]?.buffer,
-        preset: files["presetProfile"]?.[0]?.buffer,
-        filament: files["filamentProfile"]?.[0]?.buffer,
-      } as UploadedProfiles,
-    );
+    if (requestId) createProgressRecord(requestId);
 
-    if (gcodes.length === 1) {
-      try {
-        const metadata = await getMetaDataFromFile(gcodes[0]);
+    try {
+      const modelFile = files["file"][0];
+      const { gcodes, workdir } = await sliceModel(
+        modelFile.buffer,
+        modelFile.originalname,
+        req.body as SlicingSettings,
+        {
+          printer: files["printerProfile"]?.[0]?.buffer,
+          preset: files["presetProfile"]?.[0]?.buffer,
+          filament: files["filamentProfile"]?.[0]?.buffer,
+        } as UploadedProfiles,
+      );
+
+      if (gcodes.length === 1) {
+        try {
+          const metadata = await getMetaDataFromFile(gcodes[0]);
+          res.set(generateMetaDataHeaders(metadata));
+          if (requestId) markProgressTerminal(requestId, "succeeded");
+
+          res.download(gcodes[0]);
+        } finally {
+          await fs.rm(workdir, { recursive: true, force: true });
+        }
+      } else if (gcodes.length > 1) {
+        const metadata: SliceMetaData = {
+          printTime: 0,
+          filamentUsedG: 0,
+          filamentUsedMm: 0,
+        };
+
+        for (const filePath of gcodes) {
+          if (!filePath.endsWith(".gcode")) continue;
+
+          const fileMetadata = await getMetaDataFromFile(filePath);
+          metadata.printTime += fileMetadata.printTime;
+          metadata.filamentUsedG += fileMetadata.filamentUsedG;
+          metadata.filamentUsedMm += fileMetadata.filamentUsedMm;
+        }
+
         res.set(generateMetaDataHeaders(metadata));
 
-        res.download(gcodes[0]);
-      } finally {
-        await fs.rm(workdir, { recursive: true, force: true });
+        res.attachment("result.zip");
+        const archive = archiver("zip", { zlib: { level: 9 } });
+
+        archive.on("error", (err) => {
+          throw new AppError(500, `Error creating archive: ${err.message}`);
+        });
+
+        res.on("finish", async () => {
+          await fs.rm(workdir, { recursive: true, force: true });
+        });
+
+        archive.pipe(res);
+        gcodes.forEach((filePath) => {
+          archive.file(filePath, { name: path.basename(filePath) });
+        });
+
+        if (requestId) markProgressTerminal(requestId, "succeeded");
+        await archive.finalize();
+      } else {
+        throw new AppError(500, "No files generated during slicing");
       }
-    } else if (gcodes.length > 1) {
-      const metadata: SliceMetaData = {
-        printTime: 0,
-        filamentUsedG: 0,
-        filamentUsedMm: 0,
-      };
 
-      for (const filePath of gcodes) {
-        if (!filePath.endsWith(".gcode")) continue;
-
-        const fileMetadata = await getMetaDataFromFile(filePath);
-        metadata.printTime += fileMetadata.printTime;
-        metadata.filamentUsedG += fileMetadata.filamentUsedG;
-        metadata.filamentUsedMm += fileMetadata.filamentUsedMm;
-      }
-
-      res.set(generateMetaDataHeaders(metadata));
-
-      res.attachment("result.zip");
-      const archive = archiver("zip", { zlib: { level: 9 } });
-
-      archive.on("error", (err) => {
-        throw new AppError(500, `Error creating archive: ${err.message}`);
-      });
-
-      res.on("finish", async () => {
-        await fs.rm(workdir, { recursive: true, force: true });
-      });
-
-      archive.pipe(res);
-      gcodes.forEach((filePath) => {
-        archive.file(filePath, { name: path.basename(filePath) });
-      });
-
-      await archive.finalize();
-    } else {
-      throw new AppError(500, "No files generated during slicing");
+      if (requestId) markProgressTerminal(requestId, "succeeded");
+    } catch (error) {
+      if (requestId) markProgressTerminal(requestId, "failed");
+      throw error;
     }
   },
 );
