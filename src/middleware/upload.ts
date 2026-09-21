@@ -47,6 +47,17 @@ export const uploadModel = multer({
   limits: { fileSize: 100_000_000 },
 });
 
+export const uploadBundle = multer({
+  storage,
+  fileFilter: (_req, file, cb) => {
+    if (path.extname(file.originalname).toLowerCase() !== ".bbscfg") {
+      return cb(new AppError(400, "Invalid file type. Only .bbscfg files are allowed."));
+    }
+    cb(null, true);
+  },
+  limits: { fileSize: 10_000_000, files: 1 },
+});
+
 export const uploadFullPrint = multer({
   storage,
   fileFilter: (req, file, cb) => {

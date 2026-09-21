@@ -4,6 +4,46 @@ import fs from "fs";
 import path from "path";
 
 describe("Profiles API", () => {
+  describe("GET /profiles/bundled", () => {
+    it("discovers concrete stock profiles by type in deterministic name order", async () => {
+      const resourcesRoot = process.env.ORCASLICER_RESOURCES_PATH!;
+      const profilesRoot = path.join(resourcesRoot, "profiles", "bundled-e2e");
+      fs.mkdirSync(profilesRoot, { recursive: true });
+      fs.writeFileSync(
+        path.join(profilesRoot, "z-printer.json"),
+        JSON.stringify({ type: "machine", name: "Zulu printer", inherits: "base-z" }),
+      );
+      fs.writeFileSync(
+        path.join(profilesRoot, "a-printer.json"),
+        JSON.stringify({ type: "machine", name: "Alpha printer", inherits: "base-a" }),
+      );
+      fs.writeFileSync(
+        path.join(profilesRoot, "process.json"),
+        JSON.stringify({ type: "process", name: "Quality process", inherits: "process-base" }),
+      );
+      fs.writeFileSync(
+        path.join(profilesRoot, "filament.json"),
+        JSON.stringify({ type: "filament", name: "PLA filament", inherits: "filament-base" }),
+      );
+      fs.writeFileSync(
+        path.join(profilesRoot, "abstract.json"),
+        JSON.stringify({ type: "filament", name: "Abstract filament", inherits: "" }),
+      );
+      fs.writeFileSync(path.join(profilesRoot, "invalid.json"), "not json");
+
+      const response = await request.get("/profiles/bundled").expect(200);
+
+      expect(response.body).toEqual({
+        printer: [
+          { name: "Alpha printer", base_id: "base-a" },
+          { name: "Zulu printer", base_id: "base-z" },
+        ],
+        process: [{ name: "Quality process", base_id: "process-base" }],
+        filament: [{ name: "PLA filament", base_id: "filament-base" }],
+      });
+    });
+  });
+
   const printerPath = path.join(__dirname, "../files/input/printer.json");
   const printerBuffer = fs.readFileSync(printerPath);
 
