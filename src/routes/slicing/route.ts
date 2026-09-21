@@ -11,8 +11,21 @@ import fs from "fs/promises";
 import path from "path";
 import archiver from "archiver";
 import { generateMetaDataHeaders } from "./helpers";
+import { resolveBundleProfiles } from "../profiles/bundle.service";
 
 const router = Router();
+const BED_TYPES = new Set([
+  "cool plate",
+  "pc plate",
+  "cool plate (supertack)",
+  "supertack plate",
+  "bambu cool plate supertack",
+  "engineering plate",
+  "high temp plate",
+  "textured pei plate",
+  "pei plate",
+  "smooth pei plate",
+]);
 
 type SliceProgressStatus = "working" | "succeeded" | "failed";
 
@@ -121,7 +134,7 @@ router.post(
     { name: "file", maxCount: 1 },
     { name: "printerProfile", maxCount: 1 },
     { name: "presetProfile", maxCount: 1 },
-    { name: "filamentProfile", maxCount: 1 },
+    { name: "filamentProfile", maxCount: 16 },
   ]),
   async (req, res) => {
     if (!req.files || Array.isArray(req.files)) {
@@ -137,6 +150,11 @@ router.post(
       throw new AppError(400, "Model file is required for slicing");
     }
 
+    const modelFile = files["file"][0];
+    const settings = req.body as SlicingSettings;
+    validateBedType(settings.bedType);
+    const tempProfiles = await selectProfiles(req.body, files);
+
     const requestId = req.body.requestId;
     if (requestId !== undefined && !isUuid(requestId)) {
       throw new AppError(400, "requestId must be a UUID");
@@ -145,16 +163,11 @@ router.post(
     if (requestId) createProgressRecord(requestId);
 
     try {
-      const modelFile = files["file"][0];
       const { gcodes, workdir } = await sliceModel(
         modelFile.buffer,
         modelFile.originalname,
-        req.body as SlicingSettings,
-        {
-          printer: files["printerProfile"]?.[0]?.buffer,
-          preset: files["presetProfile"]?.[0]?.buffer,
-          filament: files["filamentProfile"]?.[0]?.buffer,
-        } as UploadedProfiles,
+        settings,
+        tempProfiles,
       );
 
       if (gcodes.length === 1) {
@@ -214,5 +227,41 @@ router.post(
     }
   },
 );
+
+function validateBedType(bedType: unknown): void {
+  if (bedType === undefined) return;
+  if (typeof bedType !== "string" || !BED_TYPES.has(bedType.trim().toLowerCase())) {
+    throw new AppError(400, "Invalid bedType");
+  }
+}
+
+async function selectProfiles(
+  body: Record<string, unknown>,
+  files: { [fieldname: string]: Express.Multer.File[] },
+): Promise<UploadedProfiles> {
+  const uploaded = {
+    printer: files["printerProfile"]?.[0]?.buffer,
+    preset: files["presetProfile"]?.[0]?.buffer,
+    filaments: files["filamentProfile"]?.map((file) => file.buffer),
+  };
+  const bundle = body.bundle;
+  if (bundle === undefined) return uploaded;
+  if (typeof bundle !== "string" || !bundle) throw new AppError(400, "Invalid bundle selector");
+  if (uploaded.printer || uploaded.preset || uploaded.filaments?.length) {
+    throw new AppError(400, "Bundle selectors cannot be combined with uploaded profiles");
+  }
+  const printerName = requiredSelector(body.printerName, "printerName");
+  const processName = requiredSelector(body.processName, "processName");
+  const filamentNames = requiredSelector(body.filamentNames, "filamentNames")
+    .split(";")
+    .map((name) => name.trim());
+  if (filamentNames.some((name) => !name)) throw new AppError(400, "filamentNames must not contain empty selectors");
+  return resolveBundleProfiles(bundle, printerName, processName, filamentNames);
+}
+
+function requiredSelector(value: unknown, field: string): string {
+  if (typeof value !== "string" || !value.trim()) throw new AppError(400, `${field} is required for bundle slicing`);
+  return value.trim();
+}
 
 export default router;

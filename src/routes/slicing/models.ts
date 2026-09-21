@@ -26,5 +26,5 @@ export type Category = "printers" | "presets" | "filaments";
 export interface UploadedProfiles {
   printer?: Buffer;
   preset?: Buffer;
-  filament?: Buffer;
+  filaments?: Buffer[];
 }

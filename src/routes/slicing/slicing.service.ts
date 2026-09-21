@@ -69,8 +69,11 @@ export async function sliceModel(
     args.push("--load-settings", settingsArg);
   }
 
-  if (tempProfiles?.filament) {
-    args.push("--load-filaments", `${inputDir}/filament.json`);
+  if (tempProfiles?.filaments?.length) {
+    const filamentsArg = tempProfiles.filaments
+      .map((_profile, index) => path.join(inputDir, `filament-${index + 1}.json`))
+      .join(";");
+    args.push("--load-filaments", filamentsArg);
   } else if (settings.filament) {
     args.push(
       "--load-filaments",
@@ -291,7 +294,6 @@ async function writeTempProfiles(
   try {
     const printerPath = path.join(inputDir, "printer.json");
     const presetPath = path.join(inputDir, "preset.json");
-    const filamentPath = path.join(inputDir, "filament.json");
 
     const writes: Promise<void>[] = [];
 
@@ -301,8 +303,10 @@ async function writeTempProfiles(
     if (profiles.preset && profiles.preset.length > 0) {
       writes.push(fs.writeFile(presetPath, profiles.preset));
     }
-    if (profiles.filament && profiles.filament.length > 0) {
-      writes.push(fs.writeFile(filamentPath, profiles.filament));
+    for (const [index, filament] of (profiles.filaments || []).entries()) {
+      if (filament.length > 0) {
+        writes.push(fs.writeFile(path.join(inputDir, `filament-${index + 1}.json`), filament));
+      }
     }
 
     await Promise.all(writes);
