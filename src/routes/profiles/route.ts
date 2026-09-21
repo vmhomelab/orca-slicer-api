@@ -8,11 +8,12 @@ import {
   deleteSetting,
 } from "./settings.service";
 import { AppError } from "../../middleware/error";
+import { resolveProfileInheritance } from "./inheritance.service";
 
 const router = Router();
 
 router.post("/:category", uploadJson.single("file"), async (req, res) => {
-  const name = req.body.name;
+  const { name, resolveInheritance } = req.body;
 
   validateName(name);
 
@@ -22,8 +23,12 @@ router.post("/:category", uploadJson.single("file"), async (req, res) => {
 
   validateCategory(req.params.category as string);
 
-  const content = JSON.parse(req.file.buffer.toString("utf8"));
-  await saveSetting(req.params.category as Category, name, content);
+  const category = req.params.category as Category;
+  const content =
+    resolveInheritance === "true"
+      ? await resolveProfileInheritance(category, req.file.buffer)
+      : JSON.parse(req.file.buffer.toString("utf8"));
+  await saveSetting(category, name, content);
   res.status(201).json({ name });
 });
 

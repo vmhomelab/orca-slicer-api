@@ -1,0 +1,7 @@
+{
+  "type": "filament",
+  "name": "PrintBuddy PETG",
+  "from": "User",
+  "inherits": "Generic PETG",
+  "filament_max_volumetric_speed": ["12"]
+}

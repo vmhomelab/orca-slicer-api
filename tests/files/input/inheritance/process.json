@@ -1,0 +1,7 @@
+{
+  "type": "process",
+  "name": "PrintBuddy 0.20mm Standard",
+  "from": "User",
+  "inherits": "0.20mm Standard @BBL P1S",
+  "wall_loops": "3"
+}

@@ -1,4 +1,4 @@
-import { describe, it } from "vitest";
+import { describe, expect, it } from "vitest";
 import { request } from "./setup";
 import fs from "fs";
 import path from "path";
@@ -12,6 +12,45 @@ describe("Profiles API", () => {
 
   const filamentPath = path.join(__dirname, "../files/input/filament.json");
   const filamentBuffer = fs.readFileSync(filamentPath);
+
+  const inheritedProfiles = [
+    {
+      category: "printers",
+      storedName: "unresolvedprinter",
+      fileName: "printer.json",
+      buffer: fs.readFileSync(
+        path.join(__dirname, "../files/input/inheritance/printer.json"),
+      ),
+      inheritedField: "nozzle_diameter",
+      expectedInheritedValue: ["0.4"],
+      expectedOverrideField: "bed_temperature",
+      expectedOverrideValue: [70],
+    },
+    {
+      category: "presets",
+      storedName: "unresolvedpreset",
+      fileName: "process.json",
+      buffer: fs.readFileSync(
+        path.join(__dirname, "../files/input/inheritance/process.json"),
+      ),
+      inheritedField: "layer_height",
+      expectedInheritedValue: "0.20",
+      expectedOverrideField: "wall_loops",
+      expectedOverrideValue: "3",
+    },
+    {
+      category: "filaments",
+      storedName: "unresolvedfilament",
+      fileName: "filament.json",
+      buffer: fs.readFileSync(
+        path.join(__dirname, "../files/input/inheritance/filament.json"),
+      ),
+      inheritedField: "filament_type",
+      expectedInheritedValue: ["PETG"],
+      expectedOverrideField: "filament_max_volumetric_speed",
+      expectedOverrideValue: ["12"],
+    },
+  ];
 
   describe("POST /profiles/:category", () => {
     it("should upload a printer profile successfully", async () => {
@@ -40,6 +79,113 @@ describe("Profiles API", () => {
         .attach("file", filamentBuffer, "filament.json")
         .expect(201)
         .expect({ name: "testfilament" });
+    });
+
+    for (const profile of inheritedProfiles) {
+      it(`stores an inherited ${profile.category} profile unchanged when resolveInheritance is omitted`, async () => {
+        await request
+          .post(`/profiles/${profile.category}`)
+          .field("name", profile.storedName)
+          .attach("file", profile.buffer, profile.fileName)
+          .expect(201)
+          .expect({ name: profile.storedName });
+
+        const stored = await request
+          .get(`/profiles/${profile.category}/${profile.storedName}`)
+          .expect(200);
+        expect(stored.body).toEqual(JSON.parse(profile.buffer.toString("utf8")));
+      });
+
+      it(`resolves inherited fields when uploading an inherited ${profile.category} profile`, async () => {
+        const resolvedName = `resolved${profile.storedName}`;
+        await request
+          .post(`/profiles/${profile.category}`)
+          .field("name", resolvedName)
+          .field("resolveInheritance", "true")
+          .attach("file", profile.buffer, profile.fileName)
+          .expect(201)
+          .expect({ name: resolvedName });
+
+        const stored = await request
+          .get(`/profiles/${profile.category}/${resolvedName}`)
+          .expect(200);
+        expect(stored.body[profile.inheritedField]).toEqual(
+          profile.expectedInheritedValue,
+        );
+        expect(stored.body[profile.expectedOverrideField]).toEqual(
+          profile.expectedOverrideValue,
+        );
+      });
+    }
+
+    it("returns a safe, meaningful error when an inherited parent cannot be found", async () => {
+      const missingParent = Buffer.from(
+        JSON.stringify({
+          type: "machine",
+          name: "Missing parent child",
+          inherits: "does-not-exist",
+        }),
+      );
+
+      await request
+        .post("/profiles/printers")
+        .field("name", "missingparent")
+        .field("resolveInheritance", "true")
+        .attach("file", missingParent, "printer.json")
+        .expect(400)
+        .expect((res) => {
+          expect(res.body.message).toBe(
+            'Unable to resolve inherited printers profile: parent "does-not-exist" was not found.',
+          );
+          expect(res.body.message).not.toContain(
+            process.env.ORCASLICER_RESOURCES_PATH!,
+          );
+        });
+    });
+
+    it("validates an inherited profile before looking up its parent", async () => {
+      const malformedProfile = Buffer.from(
+        JSON.stringify({
+          type: "filament",
+          name: "Malformed inheritance",
+          inherits: 123,
+        }),
+      );
+
+      await request
+        .post("/profiles/filaments")
+        .field("name", "malformedinheritance")
+        .field("resolveInheritance", "true")
+        .attach("file", malformedProfile, "filament.json")
+        .expect(400)
+        .expect((res) => {
+          expect(res.body.message).toBe(
+            'Inherited filaments profile must include a non-empty "inherits" string.',
+          );
+        });
+    });
+
+    it("does not treat an inheritance value as a host path", async () => {
+      const pathLikeParent = Buffer.from(
+        JSON.stringify({
+          type: "machine",
+          name: "Path-like parent",
+          inherits: "/etc/passwd",
+        }),
+      );
+
+      await request
+        .post("/profiles/printers")
+        .field("name", "pathlikeinheritance")
+        .field("resolveInheritance", "true")
+        .attach("file", pathLikeParent, "printer.json")
+        .expect(400)
+        .expect((res) => {
+          expect(res.body.message).toBe(
+            'Inherited printers profile must use a valid "inherits" profile name.',
+          );
+          expect(res.body.message).not.toContain("/etc/passwd");
+        });
     });
 
     it("should return 400 for invalid category", async () => {

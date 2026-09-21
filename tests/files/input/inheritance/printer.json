@@ -1,0 +1,7 @@
+{
+  "type": "machine",
+  "name": "PrintBuddy P1S",
+  "from": "User",
+  "inherits": "Bambu Lab P1S 0.4 nozzle",
+  "bed_temperature": [70]
+}

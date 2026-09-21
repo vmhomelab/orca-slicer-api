@@ -1,0 +1,7 @@
+{
+  "type": "machine",
+  "name": "Bambu Lab P1S 0.4 nozzle",
+  "from": "System",
+  "nozzle_diameter": ["0.4"],
+  "bed_shape": ["0x0", "256x0", "256x256", "0x256"]
+}

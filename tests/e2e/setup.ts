@@ -4,12 +4,18 @@ import supertest, { Test } from "supertest";
 import { Server } from "http";
 import type TestAgent from "supertest/lib/agent";
 import { loadEnvFile } from "process";
+import path from "path";
 
 try {
   loadEnvFile();
 } catch {
   console.warn("No .env file found, proceeding without.");
 }
+
+process.env.ORCASLICER_RESOURCES_PATH = path.join(
+  process.cwd(),
+  "tests/files/orca-resources",
+);
 
 const app = configureApp();
 

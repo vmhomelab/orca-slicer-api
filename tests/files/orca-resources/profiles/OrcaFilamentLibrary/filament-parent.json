@@ -1,0 +1,7 @@
+{
+  "type": "filament",
+  "name": "Generic PETG",
+  "from": "System",
+  "filament_type": ["PETG"],
+  "nozzle_temperature": ["250"]
+}
