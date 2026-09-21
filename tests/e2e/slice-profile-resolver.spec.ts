@@ -22,6 +22,8 @@ const { configureApp } = await import("../../src/index");
 let server: Server;
 let request: TestAgent<Test>;
 const model = Buffer.from("solid test model");
+const resourcesPath = path.join(process.cwd(), "tests/files/orca-resources");
+process.env.ORCASLICER_RESOURCES_PATH = resourcesPath;
 const bundleStore = path.join(process.env.DATA_PATH || path.join(process.cwd(), "data"), "bundles");
 
 const mappedManifest = {
@@ -111,6 +113,36 @@ describe("synchronous profile resolver", () => {
       .expect((res) => expect(res.body.message).toMatch(/unknown printer/i));
 
     expect(sliceModel).not.toHaveBeenCalled();
+  });
+
+  it("resolves uploaded inherited profiles against bundled resources before slicing", async () => {
+    await mockSliceSuccess();
+    const fixture = (name: string) => fs.readFileSync(path.join(__dirname, "../files/input/inheritance", name));
+
+    await request
+      .post("/slice")
+      .attach("file", model, "model.stl")
+      .attach("printerProfile", fixture("printer.json"), "printer.json")
+      .attach("presetProfile", fixture("process.json"), "process.json")
+      .attach("filamentProfile", fixture("filament.json"), "filament.json")
+      .expect(200);
+
+    const [, , , profiles] = sliceModel.mock.calls[0];
+    expect(JSON.parse(profiles.printer.toString())).toMatchObject({
+      name: "PrintBuddy P1S",
+      nozzle_diameter: ["0.4"],
+      bed_temperature: [70],
+    });
+    expect(JSON.parse(profiles.preset.toString())).toMatchObject({
+      name: "PrintBuddy 0.20mm Standard",
+      layer_height: "0.20",
+      wall_loops: "3",
+    });
+    expect(JSON.parse(profiles.filaments[0].toString())).toMatchObject({
+      name: "PrintBuddy PETG",
+      filament_type: ["PETG"],
+      filament_max_volumetric_speed: ["12"],
+    });
   });
 
   it("passes repeated uploaded filament profiles to sliceModel in multipart order", async () => {

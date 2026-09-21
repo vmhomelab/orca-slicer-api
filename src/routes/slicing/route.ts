@@ -12,6 +12,7 @@ import path from "path";
 import archiver from "archiver";
 import { generateMetaDataHeaders } from "./helpers";
 import { resolveBundleProfiles } from "../profiles/bundle.service";
+import { resolveProfileInheritance } from "../profiles/inheritance.service";
 
 const router = Router();
 const BED_TYPES = new Set([
@@ -153,7 +154,9 @@ router.post(
     const modelFile = files["file"][0];
     const settings = req.body as SlicingSettings;
     validateBedType(settings.bedType);
-    const tempProfiles = await selectProfiles(req.body, files);
+    const tempProfiles = await resolveUploadedProfileInheritance(
+      await selectProfiles(req.body, files),
+    );
 
     const requestId = req.body.requestId;
     if (requestId !== undefined && !isUuid(requestId)) {
@@ -232,6 +235,45 @@ function validateBedType(bedType: unknown): void {
   if (bedType === undefined) return;
   if (typeof bedType !== "string" || !BED_TYPES.has(bedType.trim().toLowerCase())) {
     throw new AppError(400, "Invalid bedType");
+  }
+}
+
+/** Flatten only profiles that explicitly declare a parent. This is required
+ * for PrintBuddy's standard-tier `{ inherits: <bundled-name> }` stubs; it
+ * also handles imported user profiles without allowing any request value to
+ * become a filesystem path (the inheritance service indexes resources).
+ */
+async function resolveUploadedProfileInheritance(profiles: UploadedProfiles): Promise<UploadedProfiles> {
+  return {
+    printer: await resolveInheritedBuffer("printers", profiles.printer),
+    preset: await resolveInheritedBuffer("presets", profiles.preset),
+    filaments: await Promise.all(
+      (profiles.filaments || []).map((profile) => resolveInheritedFilament(profile)),
+    ),
+  };
+}
+
+async function resolveInheritedBuffer(
+  category: "printers" | "presets" | "filaments",
+  content: Buffer | undefined,
+): Promise<Buffer | undefined> {
+  if (!content || !hasInheritance(content)) return content;
+  const resolved = await resolveProfileInheritance(category, content);
+  return Buffer.from(JSON.stringify(resolved));
+}
+
+async function resolveInheritedFilament(content: Buffer): Promise<Buffer> {
+  return (await resolveInheritedBuffer("filaments", content)) || content;
+}
+
+function hasInheritance(content: Buffer): boolean {
+  try {
+    const parsed: unknown = JSON.parse(content.toString("utf8"));
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return false;
+    const inherits = (parsed as Record<string, unknown>).inherits;
+    return typeof inherits === "string" && inherits.trim().length > 0;
+  } catch {
+    return false;
   }
 }
 
