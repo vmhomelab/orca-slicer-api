@@ -42,7 +42,7 @@ RUN apt-get update \
 	&& apt-get update \
 	&& apt-get install -y --no-install-recommends \
 	nodejs \
-	libgl1 libgl1-mesa-dri libegl1 \
+	libgl1 libopengl0 libgl1-mesa-dri libegl1 \
 	libgtk-3-0 \
 	libgstreamer1.0-0 libgstreamer-plugins-base1.0-0 \
 	libwebkit2gtk-4.1-0 \
