@@ -157,6 +157,7 @@ router.post(
     const tempProfiles = await resolveUploadedProfileInheritance(
       await selectProfiles(req.body, files),
     );
+    validateProfileCompatibility(tempProfiles);
 
     const requestId = req.body.requestId;
     if (requestId !== undefined && !isUuid(requestId)) {
@@ -230,6 +231,47 @@ router.post(
     }
   },
 );
+
+function validateProfileCompatibility(profiles: UploadedProfiles): void {
+  const printer = profileName(profiles.printer, "printer");
+  if (!printer) return;
+  assertCompatibleWithPrinter(profiles.preset, "Process", printer);
+  for (const filament of profiles.filaments || []) {
+    assertCompatibleWithPrinter(filament, "Filament", printer);
+  }
+}
+
+function assertCompatibleWithPrinter(
+  content: Buffer | undefined,
+  profileKind: "Process" | "Filament",
+  printer: string,
+): void {
+  if (!content) return;
+  const profile = parseProfile(content, profileKind.toLowerCase());
+  const compatible = profile.compatible_printers;
+  if (!Array.isArray(compatible) || compatible.length === 0) return;
+  const names = compatible.filter((name): name is string => typeof name === "string" && name.trim().length > 0);
+  if (names.length > 0 && !names.includes(printer)) {
+    const name = typeof profile.name === "string" && profile.name.trim() ? profile.name : "selected profile";
+    throw new AppError(400, `${profileKind} profile "${name}" is not compatible with printer "${printer}".`);
+  }
+}
+
+function profileName(content: Buffer | undefined, kind: string): string | undefined {
+  if (!content) return undefined;
+  const profile = parseProfile(content, kind);
+  return typeof profile.name === "string" && profile.name.trim() ? profile.name : undefined;
+}
+
+function parseProfile(content: Buffer, kind: string): Record<string, unknown> {
+  try {
+    const parsed: unknown = JSON.parse(content.toString("utf8"));
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("not object");
+    return parsed as Record<string, unknown>;
+  } catch {
+    throw new AppError(400, `Invalid ${kind} profile JSON.`);
+  }
+}
 
 function validateBedType(bedType: unknown): void {
   if (bedType === undefined) return;

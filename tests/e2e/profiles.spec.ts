@@ -19,7 +19,12 @@ describe("Profiles API", () => {
       );
       fs.writeFileSync(
         path.join(profilesRoot, "process.json"),
-        JSON.stringify({ type: "process", name: "Quality process", inherits: "process-base" }),
+        JSON.stringify({
+          type: "process",
+          name: "Quality process",
+          inherits: "process-base",
+          compatible_printers: ["Alpha printer"],
+        }),
       );
       fs.writeFileSync(
         path.join(profilesRoot, "filament.json"),
@@ -38,7 +43,13 @@ describe("Profiles API", () => {
           { name: "Alpha printer", base_id: "base-a" },
           { name: "Zulu printer", base_id: "base-z" },
         ],
-        process: [{ name: "Quality process", base_id: "process-base" }],
+        process: [
+          {
+            name: "Quality process",
+            base_id: "process-base",
+            compatible_printers: ["Alpha printer"],
+          },
+        ],
         filament: [{ name: "PLA filament", base_id: "filament-base" }],
       });
     });

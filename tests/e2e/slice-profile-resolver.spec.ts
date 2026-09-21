@@ -145,6 +145,22 @@ describe("synchronous profile resolver", () => {
     });
   });
 
+  it("rejects a process profile that declares a different compatible printer", async () => {
+    await request
+      .post("/slice")
+      .attach("file", model, "model.stl")
+      .attach("printerProfile", Buffer.from('{"name":"Bambu Lab P1S 0.4 nozzle - Ethan"}'), "printer.json")
+      .attach("presetProfile", Buffer.from(JSON.stringify({
+        name: ".05mm Super Detail @Dremel 3D40 0.4",
+        compatible_printers: ["Dremel 3D40 0.4 nozzle"],
+      })), "process.json")
+      .attach("filamentProfile", Buffer.from('{"name":"Generic PLA - Silk PLA"}'), "filament.json")
+      .expect(400)
+      .expect((res) => expect(res.body.message).toMatch(/not compatible/i));
+
+    expect(sliceModel).not.toHaveBeenCalled();
+  });
+
   it("passes repeated uploaded filament profiles to sliceModel in multipart order", async () => {
     await mockSliceSuccess();
 

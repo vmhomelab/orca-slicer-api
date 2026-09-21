@@ -15,7 +15,11 @@ import { deleteBundle, getBundle, listBundles, saveBundle } from "./bundle.servi
 
 const router = Router();
 
-type BundledProfile = { name: string; base_id: string };
+type BundledProfile = {
+  name: string;
+  base_id: string;
+  compatible_printers?: string[];
+};
 type BundledProfiles = {
   printer: BundledProfile[];
   process: BundledProfile[];
@@ -120,7 +124,11 @@ async function listBundledProfiles(): Promise<BundledProfiles> {
         const profile: unknown = JSON.parse(await fs.readFile(filename, "utf8"));
         if (!isConcreteBundledProfile(profile)) continue;
         const category = bundledCategory(profile.type);
-        if (category) result[category].push({ name: profile.name, base_id: profile.inherits });
+        if (category) {
+          const compatible_printers =
+            category === "printer" ? undefined : compatiblePrinters(profile.compatible_printers);
+          result[category].push({ name: profile.name, base_id: profile.inherits, compatible_printers });
+        }
       } catch {
         // Resource trees can contain invalid JSON; expose only usable stock presets.
       }
@@ -137,7 +145,7 @@ async function listBundledProfiles(): Promise<BundledProfiles> {
 
 function isConcreteBundledProfile(
   profile: unknown,
-): profile is { type: string; name: string; inherits: string } {
+): profile is { type: string; name: string; inherits: string; compatible_printers?: unknown } {
   if (!profile || typeof profile !== "object") return false;
   const candidate = profile as Record<string, unknown>;
   return (
@@ -147,6 +155,12 @@ function isConcreteBundledProfile(
     candidate.inherits.trim().length > 0 &&
     typeof candidate.type === "string"
   );
+}
+
+function compatiblePrinters(value: unknown): string[] | undefined {
+  const values = typeof value === "string" ? [value] : Array.isArray(value) ? value : [];
+  const names = values.filter((name): name is string => typeof name === "string" && name.trim().length > 0);
+  return names.length > 0 ? names : undefined;
 }
 
 function bundledCategory(type: string): keyof BundledProfiles | undefined {
