@@ -161,6 +161,22 @@ describe("synchronous profile resolver", () => {
     expect(sliceModel).not.toHaveBeenCalled();
   });
 
+  it("accepts a Bambu printer clone when the process declares its stock canonical name", async () => {
+    await mockSliceSuccess();
+    await request
+      .post("/slice")
+      .attach("file", model, "model.stl")
+      .attach("printerProfile", Buffer.from('{"name":"Bambu Lab P1S 0.4 nozzle - Ethan"}'), "printer.json")
+      .attach("presetProfile", Buffer.from(JSON.stringify({
+        name: "0.20mm Standard @BBL P1S",
+        compatible_printers: ["Bambu Lab P1S 0.4 nozzle"],
+      })), "process.json")
+      .attach("filamentProfile", Buffer.from('{"name":"Generic PLA - Silk PLA"}'), "filament.json")
+      .expect(200);
+
+    expect(sliceModel).toHaveBeenCalledOnce();
+  });
+
   it("passes repeated uploaded filament profiles to sliceModel in multipart order", async () => {
     await mockSliceSuccess();
 

@@ -251,10 +251,20 @@ function assertCompatibleWithPrinter(
   const compatible = profile.compatible_printers;
   if (!Array.isArray(compatible) || compatible.length === 0) return;
   const names = compatible.filter((name): name is string => typeof name === "string" && name.trim().length > 0);
-  if (names.length > 0 && !names.includes(printer)) {
+  if (names.length > 0 && !names.some((candidate) => samePrinterPreset(candidate, printer))) {
     const name = typeof profile.name === "string" && profile.name.trim() ? profile.name : "selected profile";
     throw new AppError(400, `${profileKind} profile "${name}" is not compatible with printer "${printer}".`);
   }
+}
+
+function canonicalPrinterPresetName(name: string): string {
+  const stripped = name.replace(/^#\s*/, '').trim();
+  const clone = stripped.match(/^(Bambu Lab .+?\s+\d(?:\.\d+)?\s+nozzle)\s+-\s+.+$/i);
+  return clone ? clone[1] : stripped;
+}
+
+function samePrinterPreset(left: string, right: string): boolean {
+  return canonicalPrinterPresetName(left) === canonicalPrinterPresetName(right);
 }
 
 function profileName(content: Buffer | undefined, kind: string): string | undefined {
