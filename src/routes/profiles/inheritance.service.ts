@@ -11,10 +11,31 @@ const profileTypes: Record<Category, string> = {
   filaments: "filament",
 };
 
+/** System profiles of one category, indexed per vendor directory. */
+interface ProfileIndex {
+  /** vendor directory name -> profile name -> profile */
+  byVendor: Map<string, Map<string, Profile>>;
+  /** profile name -> vendors that define it, in a deterministic order */
+  vendorsByName: Map<string, string[]>;
+}
+
+/**
+ * Vendors preferred when an uploaded profile names a parent that several
+ * vendors define. Bambu Lab first (BambuStudio: "BBL", test fixtures:
+ * "BambuLab"), then OrcaSlicer's shared filament library.
+ */
+const PREFERRED_VENDORS = ["BBL", "BambuLab", "OrcaFilamentLibrary"];
+
 /**
  * Resolves an uploaded Orca/Bambu profile against the system profile resources.
  * Parent names are always looked up from the resource index; they are never used
  * as filesystem paths.
+ *
+ * Every vendor directory ships its own abstract base profiles under the same
+ * names (`fdm_filament_common`, `fdm_process_common`, ...) with different
+ * values, e.g. a 2.85 mm filament diameter for one vendor. Parents are
+ * therefore resolved inside the vendor that owns the child profile, falling
+ * back to the preferred shared vendors and then to a unique definition.
  */
 export async function resolveProfileInheritance(
   category: Category,
@@ -22,16 +43,37 @@ export async function resolveProfileInheritance(
 ): Promise<Profile> {
   const profile = parseProfile(category, content);
   const inherits = validateInheritedProfile(category, profile);
-  const profiles = await loadProfiles(category);
+  const index = await loadProfiles(category);
 
-  if (!profiles.has(inherits)) {
+  if (!index.vendorsByName.has(inherits)) {
     throw new AppError(
       400,
       `Unable to resolve inherited ${category} profile: parent "${inherits}" was not found.`,
     );
   }
 
-  return resolveProfile(profile, profiles, category, new Set<string>());
+  const resolved = resolveProfile(profile, undefined, index, category, new Set<string>());
+  return category === "filaments" ? withFilamentLiftOverrides(resolved) : resolved;
+}
+
+/**
+ * OrcaSlicer filament overrides that its GUI fills with "nil" (= use the
+ * printer value) when a system preset does not define them. Bambu Lab's own
+ * filament chains do not, and the OrcaSlicer CLI segfaults when they are
+ * absent from a loaded filament. Bambu Studio ignores them.
+ */
+const FILAMENT_LIFT_OVERRIDE_KEYS = [
+  "filament_retract_lift_above",
+  "filament_retract_lift_below",
+  "filament_retract_lift_enforce",
+];
+
+function withFilamentLiftOverrides(profile: Profile): Profile {
+  const result = { ...profile };
+  for (const key of FILAMENT_LIFT_OVERRIDE_KEYS) {
+    if (result[key] === undefined) result[key] = ["nil"];
+  }
+  return result;
 }
 
 function parseProfile(category: Category, content: Buffer): Profile {
@@ -63,7 +105,7 @@ function validateInheritedProfile(category: Category, profile: Profile): string 
   return inherits;
 }
 
-async function loadProfiles(category: Category): Promise<Map<string, Profile>> {
+async function loadProfiles(category: Category): Promise<ProfileIndex> {
   const resourcesPath = process.env.ORCASLICER_RESOURCES_PATH;
   if (!resourcesPath) {
     throw new AppError(500, "Profile inheritance resolution is not configured.");
@@ -76,9 +118,15 @@ async function loadProfiles(category: Category): Promise<Map<string, Profile>> {
   } catch {
     throw new AppError(500, "Profile inheritance resources are unavailable.");
   }
+  files.sort();
 
-  const profiles = new Map<string, Profile>();
+  const byVendor = new Map<string, Map<string, Profile>>();
+  const vendorsByName = new Map<string, string[]>();
   for (const file of files) {
+    const relative = path.relative(profilesRoot, file).split(path.sep);
+    // Vendor index files (profiles/<Vendor>.json) are not profiles.
+    if (relative.length < 2) continue;
+    const vendor = relative[0];
     try {
       const parsed: unknown = JSON.parse(await fs.readFile(file, "utf8"));
       if (
@@ -87,14 +135,38 @@ async function loadProfiles(category: Category): Promise<Map<string, Profile>> {
         typeof parsed.name === "string" &&
         parsed.name.trim().length > 0
       ) {
-        profiles.set(parsed.name, parsed);
+        let vendorProfiles = byVendor.get(vendor);
+        if (!vendorProfiles) {
+          vendorProfiles = new Map<string, Profile>();
+          byVendor.set(vendor, vendorProfiles);
+        }
+        if (vendorProfiles.has(parsed.name)) continue;
+        vendorProfiles.set(parsed.name, parsed);
+        const vendors = vendorsByName.get(parsed.name) ?? [];
+        vendors.push(vendor);
+        vendorsByName.set(parsed.name, vendors);
       }
     } catch {
       // A malformed unrelated system profile must not prevent valid parents
       // elsewhere in Orca's resource tree from being resolved.
     }
   }
-  return profiles;
+  return { byVendor, vendorsByName };
+}
+
+/**
+ * Pick the vendor whose definition of `name` should be used: the child's own
+ * vendor, then the preferred shared vendors, then a vendor that is the only
+ * one defining the name, then the first vendor in sorted order.
+ */
+function selectVendor(name: string, childVendor: string | undefined, index: ProfileIndex): string | undefined {
+  const vendors = index.vendorsByName.get(name);
+  if (!vendors || vendors.length === 0) return undefined;
+  if (childVendor && vendors.includes(childVendor)) return childVendor;
+  for (const preferred of PREFERRED_VENDORS) {
+    if (vendors.includes(preferred)) return preferred;
+  }
+  return vendors[0];
 }
 
 async function findJsonFiles(directory: string): Promise<string[]> {
@@ -112,7 +184,8 @@ async function findJsonFiles(directory: string): Promise<string[]> {
 
 function resolveProfile(
   profile: Profile,
-  profiles: Map<string, Profile>,
+  vendor: string | undefined,
+  index: ProfileIndex,
   category: Category,
   ancestors: Set<string>,
 ): Profile {
@@ -121,8 +194,9 @@ function resolveProfile(
     throw new AppError(400, `Unable to resolve inherited ${category} profile: inheritance cycle detected.`);
   }
 
-  const parent = profiles.get(inherits);
-  if (!parent) {
+  const parentVendor = selectVendor(inherits, vendor, index);
+  const parent = parentVendor ? index.byVendor.get(parentVendor)?.get(inherits) : undefined;
+  if (!parentVendor || !parent) {
     throw new AppError(
       400,
       `Unable to resolve inherited ${category} profile: parent "${inherits}" was not found.`,
@@ -137,7 +211,7 @@ function resolveProfile(
 
   const nextAncestors = new Set(ancestors).add(inherits);
   return {
-    ...resolveProfile(parent, profiles, category, nextAncestors),
+    ...resolveProfile(parent, parentVendor, index, category, nextAncestors),
     ...profile,
   };
 }
