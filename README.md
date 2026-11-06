@@ -54,6 +54,21 @@ docker build --build-arg ORCA_VERSION=2.3.0 -t orca-slicer-api .
 docker run -d -p 3000:3000 --name orca-slicer-api orca-slicer-api
 ```
 
+#### Bambu Studio image
+
+`Dockerfile.bambu-studio` bundles the Bambu Studio CLI instead of OrcaSlicer
+behind the same API (AMD64 only). It is needed for printers that OrcaSlicer
+does not support yet, such as the Bambu Lab X2D:
+
+```bash
+docker build -f Dockerfile.bambu-studio --build-arg BAMBU_VERSION=02.08.02.61 -t bambu-studio-api .
+docker run -d -p 3001:3000 -v "./data:/app/data" --name bambu-studio-api bambu-studio-api
+```
+
+The AppImage URL is looked up through the GitHub releases API. If that
+lookup fails (for example because of the unauthenticated rate limit), pass
+the asset URL directly with `--build-arg BAMBU_APPIMAGE_URL=<url>`.
+
 ### Local (Development)
 
 ```bash

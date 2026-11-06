@@ -280,6 +280,21 @@ function parseMetaDataFromString(content: string): SliceMetaData {
         data.filamentUsedG = parseFloat(gMatch[1]);
       }
     }
+
+    // BambuStudio writes the totals into its header block instead, e.g.
+    // "; total filament length [mm] : 97.30" / "; total filament weight [g] : 0.82".
+    if (data.filamentUsedMm === 0) {
+      const mmMatch = content.match(/^; total filament length \[mm\] :\s*(\d+(?:\.\d+)?)/m);
+      if (mmMatch) {
+        data.filamentUsedMm = parseFloat(mmMatch[1]);
+      }
+    }
+    if (data.filamentUsedG === 0) {
+      const gMatch = content.match(/^; total filament weight \[g\] :\s*(\d+(?:\.\d+)?)/m);
+      if (gMatch) {
+        data.filamentUsedG = parseFloat(gMatch[1]);
+      }
+    }
   } catch (err) {
     console.error("Failed to parse metadata from string:", err);
   }
